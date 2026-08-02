@@ -178,6 +178,27 @@ class PersistenceTests(unittest.TestCase):
                 store.get_session(duplicate_id)
             store.close()
 
+    def test_session_export_import_excludes_secrets_and_remaps_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = SessionStore(Path(directory) / "source.sqlite")
+            folder = Folder("Imported")
+            source.add_folder(folder)
+            credential_id = new_id()
+            original = Session("Remote", "ssh", "server.example", 22, "admin", credential_id, folder.id)
+            source.add_session(original)
+            export_path = Path(directory) / "sessions.json"
+            source.export_json(export_path)
+            self.assertNotIn("password", export_path.read_text())
+
+            target = SessionStore(Path(directory) / "target.sqlite")
+            folder_count, session_count = target.import_json(export_path)
+            self.assertEqual((folder_count, session_count), (1, 1))
+            imported = target.list_sessions()[0]
+            self.assertNotEqual(imported.id, original.id)
+            self.assertEqual(imported.credential_id, credential_id)
+            self.assertEqual(imported.folder_id, target.list_folders()[0].id)
+            source.close(); target.close()
+
 
 if __name__ == "__main__":
     unittest.main()

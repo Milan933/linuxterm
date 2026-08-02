@@ -41,6 +41,12 @@ it. Double-clicking an SSH session starts an OpenSSH terminal tab. Once that tab
 sidebar switches to its runtime-bound SFTP browser and returns to the saved tree when another tab
 is selected.
 
+The explorer also provides session search, folder/session context-menu operations, tab rename and
+duplication, and JSON **Export**/**Import** actions. Export files contain saved folder and session
+definitions plus credential IDs only; passwords and other decrypted secrets are never written to
+the export. Imports create fresh resource IDs and may be placed inside the selected folder. The
+SFTP view includes an editable remote path field; press Enter to navigate directly.
+
 If the configured XDG directory is unavailable, startup falls back to
 `$TMPDIR/linuxterm` and reports the fallback on stderr. This keeps the application runnable
 in restricted environments; normal desktop installations use the standard XDG locations.
@@ -58,3 +64,7 @@ be isolated to the UI adapter if VTE4 becomes the target platform baseline.
 ```text
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
+
+The automated suite covers persistence, encrypted credential storage, resource CRUD and
+duplication, JSON session export/import, clipboard policy, terminal environment, and SFTP path
+handling.

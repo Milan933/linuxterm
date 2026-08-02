@@ -290,6 +290,102 @@ class SessionStore:
         self.add_session(clone)
         return clone.id
 
+    def export_json(self, path: Path) -> None:
+        """Export saved resources without exporting any credential secret."""
+
+        payload = {
+            "format": "linuxterm-sessions",
+            "version": 1,
+            "folders": [
+                {
+                    "id": folder.id,
+                    "name": folder.name,
+                    "parent_id": folder.parent_id,
+                    "sort_order": folder.sort_order,
+                }
+                for folder in self.list_folders()
+            ],
+            "sessions": [
+                {
+                    "id": session.id,
+                    "name": session.name,
+                    "kind": session.kind,
+                    "hostname": session.hostname,
+                    "port": session.port,
+                    "username": session.username,
+                    "credential_id": session.credential_id,
+                    "folder_id": session.folder_id,
+                    "working_directory": session.working_directory,
+                    "startup_command": session.startup_command,
+                    "shell_command": session.shell_command,
+                    "environment": session.environment,
+                    "notes": session.notes,
+                    "sort_order": session.sort_order,
+                }
+                for session in self.list_sessions()
+            ],
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def import_json(self, path: Path, parent_id: str | None = None) -> tuple[int, int]:
+        """Import resources with fresh resource IDs and preserved credential references."""
+
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if raw.get("format") != "linuxterm-sessions" or raw.get("version") != 1:
+            raise ValueError("unsupported session export format")
+        folders = raw.get("folders")
+        sessions = raw.get("sessions")
+        if not isinstance(folders, list) or not isinstance(sessions, list):
+            raise ValueError("invalid session export structure")
+        self._assert_folder_target(parent_id)
+
+        folder_map: dict[str, str] = {}
+        remaining = list(folders)
+        while remaining:
+            progress = False
+            for item in remaining[:]:
+                if not isinstance(item, dict):
+                    raise ValueError("invalid folder entry")
+                old_id = str(item.get("id", ""))
+                self._validate_id(old_id)
+                old_parent = item.get("parent_id")
+                if old_parent is not None and old_parent not in folder_map:
+                    continue
+                new_folder = Folder(
+                    name=str(item.get("name", "")),
+                    parent_id=parent_id if old_parent is None else folder_map[old_parent],
+                    sort_order=int(item.get("sort_order", 0)),
+                )
+                self.add_folder(new_folder)
+                folder_map[old_id] = new_folder.id
+                remaining.remove(item)
+                progress = True
+            if not progress:
+                raise ValueError("folder hierarchy contains an invalid parent")
+
+        imported_sessions = 0
+        for item in sessions:
+            if not isinstance(item, dict):
+                raise ValueError("invalid session entry")
+            old_folder = item.get("folder_id")
+            if old_folder is not None and old_folder not in folder_map:
+                raise ValueError("session references an unknown folder")
+            credential_id = item.get("credential_id")
+            if credential_id is not None:
+                self._validate_id(str(credential_id))
+            session = Session(
+                name=str(item.get("name", "")), kind=str(item.get("kind", "local")),
+                hostname=item.get("hostname"), port=item.get("port"), username=item.get("username"),
+                credential_id=credential_id, folder_id=parent_id if old_folder is None and parent_id else folder_map.get(old_folder),
+                working_directory=item.get("working_directory"), startup_command=item.get("startup_command"),
+                shell_command=item.get("shell_command"), environment=dict(item.get("environment") or {}),
+                notes=item.get("notes"), sort_order=int(item.get("sort_order", 0)),
+            )
+            self.add_session(session)
+            imported_sessions += 1
+        return len(folder_map), imported_sessions
+
     def children(self, parent_id: str | None) -> list[tuple[str, str, str]]:
         rows = self.db.execute("SELECT id, resource_type, name FROM resources WHERE parent_folder_id IS ? ORDER BY sort_order, name", (parent_id,)).fetchall()
         return [(row[0], row[1], row[2]) for row in rows]

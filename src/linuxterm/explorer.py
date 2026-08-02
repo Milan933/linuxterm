@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import gi
 
@@ -33,10 +34,16 @@ class SessionExplorer(Gtk.Box):
         toolbar = Gtk.Box(spacing=4)
         new_folder = Gtk.Button(label="New Folder")
         new_session = Gtk.Button(label="New SSH Session")
+        export_button = Gtk.Button(label="Export")
+        import_button = Gtk.Button(label="Import")
         new_folder.connect("clicked", self._new_folder)
         new_session.connect("clicked", self._new_session)
+        export_button.connect("clicked", self._export)
+        import_button.connect("clicked", self._import)
         toolbar.pack_start(new_folder, True, True, 0)
         toolbar.pack_start(new_session, True, True, 0)
+        toolbar.pack_start(export_button, True, True, 0)
+        toolbar.pack_start(import_button, True, True, 0)
         self.pack_start(toolbar, False, False, 4)
         self.search = Gtk.SearchEntry(placeholder_text="Search sessions and folders")
         self.search.connect("search-changed", self._search_changed)
@@ -120,6 +127,43 @@ class SessionExplorer(Gtk.Box):
     def _error(self, message: str) -> None:
         dialog = Gtk.MessageDialog(transient_for=self.get_toplevel(), flags=Gtk.DialogFlags.MODAL, message_type=Gtk.MessageType.ERROR, buttons=Gtk.ButtonsType.OK, text=message)
         dialog.run(); dialog.destroy()
+
+    def _file_dialog(self, action: Gtk.FileChooserAction, title: str, confirm: bool = False):
+        buttons = ("Cancel", Gtk.ResponseType.CANCEL, "Select", Gtk.ResponseType.OK)
+        if confirm:
+            buttons = ("Cancel", Gtk.ResponseType.CANCEL, "Export", Gtk.ResponseType.OK)
+        dialog = Gtk.FileChooserDialog(title=title, transient_for=self.get_toplevel(), action=action)
+        for label, response in zip(buttons[::2], buttons[1::2]):
+            dialog.add_button(label, response)
+        if action == Gtk.FileChooserAction.SAVE:
+            dialog.set_current_name("linuxterm-sessions.json")
+            dialog.set_do_overwrite_confirmation(True)
+        filter_json = Gtk.FileFilter(); filter_json.set_name("JSON files"); filter_json.add_pattern("*.json")
+        dialog.add_filter(filter_json)
+        return dialog
+
+    def _export(self, _button) -> None:
+        dialog = self._file_dialog(Gtk.FileChooserAction.SAVE, "Export sessions", confirm=True)
+        try:
+            if dialog.run() == Gtk.ResponseType.OK:
+                self.store.export_json(Path(dialog.get_filename()))
+                self._error("Sessions exported successfully.")
+        except (OSError, TypeError, ValueError) as error:
+            self._error(f"Export failed: {error}")
+        finally:
+            dialog.destroy()
+
+    def _import(self, _button) -> None:
+        dialog = self._file_dialog(Gtk.FileChooserAction.OPEN, "Import sessions")
+        try:
+            if dialog.run() == Gtk.ResponseType.OK:
+                folders, sessions = self.store.import_json(Path(dialog.get_filename()), self._selected_folder())
+                self.reload()
+                self._error(f"Imported {folders} folder(s) and {sessions} session(s).")
+        except (OSError, TypeError, ValueError) as error:
+            self._error(f"Import failed: {error}")
+        finally:
+            dialog.destroy()
 
     def reload(self) -> None:
         self._reloading = True
