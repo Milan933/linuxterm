@@ -226,6 +226,70 @@ class SessionStore:
             raise KeyError(resource_id)
         return str(row[0])
 
+    def get_resource_name(self, resource_id: str) -> str:
+        self._validate_id(resource_id)
+        row = self.db.execute("SELECT name FROM resources WHERE id = ?", (resource_id,)).fetchone()
+        if row is None:
+            raise KeyError(resource_id)
+        return str(row[0])
+
+    def rename_resource(self, resource_id: str, name: str) -> None:
+        """Rename a saved resource without changing its stable identifier."""
+
+        self._validate_id(resource_id)
+        self._validate_name(name)
+        with self.db:
+            updated = self.db.execute(
+                "UPDATE resources SET name = ?, updated_at = ? WHERE id = ?",
+                (name.strip(), utc_now(), resource_id),
+            ).rowcount
+        if not updated:
+            raise KeyError(resource_id)
+
+    def delete_resource(self, resource_id: str, recursive: bool = False) -> None:
+        """Delete a resource, requiring an explicit recursive policy for folders."""
+
+        self._validate_id(resource_id)
+        resource_type = self.get_resource_type(resource_id)
+        children = [child[0] for child in self.children(resource_id)]
+        if children and not recursive:
+            raise ValueError("folder is not empty")
+        ordered = []
+        pending = [resource_id]
+        while pending:
+            current = pending.pop()
+            ordered.append(current)
+            pending.extend(child[0] for child in self.children(current))
+        with self.db:
+            for identifier in reversed(ordered):
+                self.db.execute("DELETE FROM resources WHERE id = ?", (identifier,))
+        if resource_type == "folder":
+            return
+
+    def duplicate_resource(self, resource_id: str, parent_id: str | None = None) -> str:
+        """Clone a folder subtree or session while retaining credential references."""
+
+        resource_type = self.get_resource_type(resource_id)
+        source_parent = next((row[1] for row in self.db.execute("SELECT id, parent_folder_id FROM resources WHERE id = ?", (resource_id,)).fetchall()), None)
+        target_parent = source_parent if parent_id is None else parent_id
+        if resource_type == "folder":
+            row = self.db.execute("SELECT name FROM resources WHERE id = ?", (resource_id,)).fetchone()
+            clone = Folder(f"{row[0]} copy", parent_id=target_parent)
+            self.add_folder(clone)
+            for child_id, _child_type, _child_name in self.children(resource_id):
+                self.duplicate_resource(child_id, clone.id)
+            return clone.id
+        source = self.get_session(resource_id)
+        clone = Session(
+            name=f"{source.name} copy", kind=source.kind, hostname=source.hostname,
+            port=source.port, username=source.username, credential_id=source.credential_id,
+            folder_id=target_parent, working_directory=source.working_directory,
+            startup_command=source.startup_command, shell_command=source.shell_command,
+            environment=dict(source.environment), notes=source.notes,
+        )
+        self.add_session(clone)
+        return clone.id
+
     def children(self, parent_id: str | None) -> list[tuple[str, str, str]]:
         rows = self.db.execute("SELECT id, resource_type, name FROM resources WHERE parent_folder_id IS ? ORDER BY sort_order, name", (parent_id,)).fetchall()
         return [(row[0], row[1], row[2]) for row in rows]

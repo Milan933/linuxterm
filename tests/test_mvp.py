@@ -7,7 +7,7 @@ from linuxterm.clipboard import ClipboardController
 from linuxterm.config import AppConfig
 from linuxterm.credentials import CredentialManager
 from linuxterm.sftp import SftpBrowser
-from linuxterm.sessions import ExplorerState, Folder, Session, SessionStore
+from linuxterm.sessions import ExplorerState, Folder, Session, SessionStore, new_id
 from linuxterm.terminal import TerminalView
 from linuxterm.vault import CredentialKeyStore, CredentialVault
 
@@ -155,6 +155,27 @@ class PersistenceTests(unittest.TestCase):
             store.move_resource(session.id, first.id)
             self.assertIsNone(store.get_session(session.id).credential_id)
             self.assertEqual(store.get_session(session.id).folder_id, first.id)
+            store.close()
+
+    def test_resource_crud_and_duplicate_preserve_credential_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionStore(Path(directory) / "sessions.sqlite")
+            folder = Folder("Production")
+            store.add_folder(folder)
+            credential_id = new_id()
+            session = Session("Database", "ssh", "db.example", 22, "operator", credential_id, folder.id)
+            store.add_session(session)
+            store.rename_resource(session.id, "Primary database")
+            self.assertEqual(store.get_resource_name(session.id), "Primary database")
+            duplicate_id = store.duplicate_resource(session.id)
+            duplicate = store.get_session(duplicate_id)
+            self.assertEqual(duplicate.credential_id, credential_id)
+            self.assertEqual(duplicate.folder_id, folder.id)
+            store.delete_resource(folder.id, recursive=True)
+            with self.assertRaises(KeyError):
+                store.get_session(session.id)
+            with self.assertRaises(KeyError):
+                store.get_session(duplicate_id)
             store.close()
 
 

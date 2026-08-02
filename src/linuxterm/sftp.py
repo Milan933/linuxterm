@@ -30,8 +30,12 @@ class SftpBrowser(Gtk.Box):
         self.path = "."
         self._request_number = 0
         self.title = Gtk.Label(xalign=0)
+        self.path_entry = Gtk.Entry()
+        self.path_entry.set_placeholder_text("Remote path, e.g. /var/log or projects")
+        self.path_entry.connect("activate", self._path_entered)
         self.status = Gtk.Label(xalign=0)
         self.pack_start(self.title, False, False, 8)
+        self.pack_start(self.path_entry, False, False, 4)
         self.pack_start(self.status, False, False, 4)
         self.follow_checkbox = Gtk.CheckButton(label="Follow terminal directory")
         self.follow_checkbox.connect("toggled", self._follow_toggled)
@@ -101,9 +105,25 @@ class SftpBrowser(Gtk.Box):
     def _update_title(self) -> None:
         if self.session is None:
             self.title.set_text("SFTP")
+            self.path_entry.set_text("")
         else:
             user_host = f"{self.session.username}@" if self.session.username else ""
             self.title.set_text(f"SFTP · {user_host}{self.session.hostname or ''} · {self._display_path()}")
+            self.path_entry.set_text(self.path)
+
+    def _path_entered(self, entry: Gtk.Entry) -> None:
+        value = entry.get_text().strip()
+        if not value:
+            value = "."
+        if "\x00" in value:
+            self.status.set_text("Invalid remote path")
+            entry.set_text(self.path)
+            return
+        self.path = posixpath.normpath(value)
+        if self.path == "":
+            self.path = "."
+        self._update_title()
+        self._refresh()
 
     def _refresh(self) -> None:
         if self.session is None:
@@ -197,6 +217,10 @@ class SftpBrowser(Gtk.Box):
 
     def _follow_toggled(self, _checkbox) -> None:
         if self.follow_checkbox.get_active():
+            if self.terminal is None:
+                self.status.set_text("Follow mode is available for an active SSH tab")
+            elif self.terminal.get_current_directory_uri() is None:
+                self.status.set_text("Waiting for the remote shell directory…")
             self._poll_terminal_directory()
 
     def _poll_terminal_directory(self) -> bool:
@@ -206,6 +230,8 @@ class SftpBrowser(Gtk.Box):
         if uri:
             parsed = urlparse(uri)
             remote_path = unquote(parsed.path or "/")
+            if remote_path.startswith("//"):
+                remote_path = remote_path[1:]
             if remote_path and remote_path != self.path:
                 self.path = remote_path
                 self._update_title()

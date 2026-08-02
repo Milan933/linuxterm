@@ -28,6 +28,7 @@ class SessionExplorer(Gtk.Box):
         self._expanded: set[str] = set(store.load_explorer_state().expanded_folder_ids)
         self._selected: str | None = store.load_explorer_state().selected_resource_id
         self._reloading = False
+        self._query = ""
 
         toolbar = Gtk.Box(spacing=4)
         new_folder = Gtk.Button(label="New Folder")
@@ -37,6 +38,9 @@ class SessionExplorer(Gtk.Box):
         toolbar.pack_start(new_folder, True, True, 0)
         toolbar.pack_start(new_session, True, True, 0)
         self.pack_start(toolbar, False, False, 4)
+        self.search = Gtk.SearchEntry(placeholder_text="Search sessions and folders")
+        self.search.connect("search-changed", self._search_changed)
+        self.pack_start(self.search, False, False, 4)
 
         self.model = Gtk.TreeStore(str, str, str)
         self.tree = Gtk.TreeView(model=self.model)
@@ -67,6 +71,16 @@ class SessionExplorer(Gtk.Box):
             return None
         resource_id, resource_type, _name = self.model[iterator]
         return resource_id if resource_type == "folder" else None
+
+    def _selected_resource(self) -> tuple[str, str, str] | None:
+        _model, iterator = self.tree.get_selection().get_selected()
+        if iterator is None:
+            return None
+        return tuple(self.model[iterator])
+
+    def _search_changed(self, entry: Gtk.SearchEntry) -> None:
+        self._query = entry.get_text().strip().casefold()
+        self.reload()
 
     def _new_folder(self, _button) -> None:
         parent = self._selected_folder()
@@ -110,10 +124,20 @@ class SessionExplorer(Gtk.Box):
     def reload(self) -> None:
         self._reloading = True
         self.model.clear()
+        def branch_matches(resource_id: str, resource_type: str, name: str) -> bool:
+            if not self._query or self._query in name.casefold():
+                return True
+            return resource_type == "folder" and any(
+                branch_matches(child_id, child_type, child_name)
+                for child_id, child_type, child_name in self.store.children(resource_id)
+            )
+
         def add_children(parent_iter, parent_id):
             for resource_id, resource_type, name in self.store.children(parent_id):
-                iterator = self.model.append(parent_iter, (resource_id, resource_type, name))
-                if resource_type == "folder": add_children(iterator, resource_id)
+                if branch_matches(resource_id, resource_type, name):
+                    iterator = self.model.append(parent_iter, (resource_id, resource_type, name))
+                    if resource_type == "folder":
+                        add_children(iterator, resource_id)
         add_children(None, None)
         self._reloading = False
         self.show_all()
@@ -158,12 +182,79 @@ class SessionExplorer(Gtk.Box):
         self.store.save_explorer_state(ExplorerState(selected_resource_id=self._selected, expanded_folder_ids=tuple(sorted(self._expanded))))
 
     def _button_press(self, _tree, event) -> bool:
-        if event.button == 3 and event.state & Gdk.ModifierType.SHIFT_MASK:
+        if event.button == 3:
+            hit = self.tree.get_path_at_pos(int(event.x), int(event.y))
+            selected = None
+            if hit:
+                path = hit[0]
+                self.tree.get_selection().select_path(path)
+                iterator = self.model.get_iter(path)
+                selected = tuple(self.model[iterator])
             menu = Gtk.Menu()
-            folder = Gtk.MenuItem(label="New Folder"); session = Gtk.MenuItem(label="New SSH Session")
-            folder.connect("activate", self._new_folder); session.connect("activate", self._new_session)
-            menu.append(folder); menu.append(session); menu.show_all(); menu.popup_at_pointer(event); return True
+            self._append_menu_item(menu, "New Folder", self._new_folder)
+            self._append_menu_item(menu, "New SSH Session", self._new_session)
+            if selected:
+                resource_id, resource_type, _name = selected
+                menu.append(Gtk.SeparatorMenuItem())
+                if resource_type == "ssh_session":
+                    self._append_menu_item(menu, "Connect", lambda _item: self.on_open_session(self.store.get_session(resource_id)))
+                self._append_menu_item(menu, "Rename", lambda _item: self._rename_resource(resource_id))
+                self._append_menu_item(menu, "Duplicate", lambda _item: self._duplicate_resource(resource_id))
+                if resource_type == "folder":
+                    self._append_menu_item(menu, "Expand All", lambda _item: self._set_all_expanded(resource_id, True))
+                    self._append_menu_item(menu, "Collapse All", lambda _item: self._set_all_expanded(resource_id, False))
+                self._append_menu_item(menu, "Delete", lambda _item: self._delete_resource(resource_id, resource_type))
+            menu.show_all(); menu.popup_at_pointer(event); return True
         return False
+
+    @staticmethod
+    def _append_menu_item(menu: Gtk.Menu, label: str, callback) -> None:
+        item = Gtk.MenuItem(label=label)
+        item.connect("activate", callback)
+        menu.append(item)
+
+    def _text_dialog(self, title: str, initial: str) -> str | None:
+        dialog = Gtk.Dialog(title=title, transient_for=self.get_toplevel(), flags=Gtk.DialogFlags.MODAL)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("OK", Gtk.ResponseType.OK)
+        entry = Gtk.Entry(text=initial)
+        dialog.get_content_area().pack_start(entry, False, False, 8)
+        dialog.show_all()
+        result = entry.get_text().strip() if dialog.run() == Gtk.ResponseType.OK else None
+        dialog.destroy()
+        return result
+
+    def _rename_resource(self, resource_id: str) -> None:
+        try:
+            initial = self.store.get_resource_name(resource_id)
+        except KeyError:
+            return
+        name = self._text_dialog("Rename resource", initial)
+        if name:
+            try: self.store.rename_resource(resource_id, name); self.reload()
+            except (ValueError, KeyError) as error: self._error(str(error))
+
+    def _delete_resource(self, resource_id: str, resource_type: str) -> None:
+        dialog = Gtk.MessageDialog(transient_for=self.get_toplevel(), flags=Gtk.DialogFlags.MODAL, message_type=Gtk.MessageType.QUESTION, buttons=Gtk.ButtonsType.NONE, text="Delete this resource?")
+        dialog.format_secondary_text("A non-empty folder and all of its contents will be deleted." if resource_type == "folder" else "The saved session will be removed, but its credential remains.")
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL); dialog.add_button("Delete", Gtk.ResponseType.OK)
+        response = dialog.run(); dialog.destroy()
+        if response == Gtk.ResponseType.OK:
+            try: self.store.delete_resource(resource_id, recursive=True); self._selected = None; self.reload()
+            except (ValueError, KeyError) as error: self._error(str(error))
+
+    def _duplicate_resource(self, resource_id: str) -> None:
+        try: self.store.duplicate_resource(resource_id); self.reload()
+        except (ValueError, KeyError, sqlite3.IntegrityError) as error: self._error(str(error))
+
+    def _set_all_expanded(self, folder_id: str, expanded: bool) -> None:
+        pending = [folder_id]
+        while pending:
+            current = pending.pop()
+            if expanded: self._expanded.add(current)
+            else: self._expanded.discard(current)
+            pending.extend(item[0] for item in self.store.children(current) if item[1] == "folder")
+        self._save_state(); self.reload()
 
     def _drag_data_get(self, _tree, _context, selection_data, _info, _time) -> None:
         selected = self.tree.get_selection(); _model, iterator = selected.get_selected()

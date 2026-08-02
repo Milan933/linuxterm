@@ -58,13 +58,19 @@ class MainWindow(Gtk.ApplicationWindow):
         session.set_submenu(session_menu)
         new_local = Gtk.MenuItem(label="New Local Shell")
         new_local.connect("activate", lambda _item: self._new_local_tab())
+        rename_tab = Gtk.MenuItem(label="Rename Active Tab")
+        rename_tab.connect("activate", lambda _item: self._rename_active_tab())
+        duplicate_tab = Gtk.MenuItem(label="Duplicate Active Tab")
+        duplicate_tab.connect("activate", lambda _item: self._duplicate_active_tab())
+        close_tab = Gtk.MenuItem(label="Close Active Tab")
+        close_tab.connect("activate", lambda _item: self._close_active_tab())
         save_local = Gtk.MenuItem(label="Save Current as Local Session")
         save_local.connect("activate", lambda _item: self._save_current("local"))
         save_ssh = Gtk.MenuItem(label="Save SSH Session…")
         save_ssh.connect("activate", lambda _item: self._save_current("ssh"))
         quit_item = Gtk.MenuItem(label="Quit")
         quit_item.connect("activate", lambda _item: self.get_application().quit())
-        for item in (new_local, save_local, save_ssh, quit_item):
+        for item in (new_local, rename_tab, duplicate_tab, close_tab, save_local, save_ssh, quit_item):
             session_menu.append(item)
         bar.append(session)
         root.pack_start(bar, False, False, 0)
@@ -77,16 +83,16 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _append_tab(self, view: TerminalView, title: str) -> None:
         header = Gtk.EventBox()
-        header.set_size_request(300, 34)
+        header.set_size_request(190, 28)
         row = Gtk.Box(spacing=4)
         label = Gtk.Label(label=title)
-        label.set_width_chars(26)
+        label.set_width_chars(16)
         label.set_xalign(0.0)
         label.set_ellipsize(Pango.EllipsizeMode.END)
         label.set_tooltip_text(title)
         header.set_tooltip_text(title)
         close = Gtk.Button.new_from_icon_name("window-close", Gtk.IconSize.MENU)
-        close.set_size_request(28, 28)
+        close.set_size_request(22, 22)
         close.set_relief(Gtk.ReliefStyle.NONE)
         close.set_focus_on_click(False)
         close.connect("clicked", lambda _button: self._close_tab(view))
@@ -105,14 +111,60 @@ class MainWindow(Gtk.ApplicationWindow):
         if event.button == 2:
             self._close_tab(view)
             return True
+        if event.button == 3:
+            menu = Gtk.Menu()
+            rename = Gtk.MenuItem(label="Rename Tab")
+            duplicate = Gtk.MenuItem(label="Duplicate Tab")
+            close = Gtk.MenuItem(label="Close Tab")
+            rename.connect("activate", lambda _item: self._rename_tab(view))
+            duplicate.connect("activate", lambda _item: self._duplicate_tab(view))
+            close.connect("activate", lambda _item: self._close_tab(view))
+            for item in (rename, duplicate, close): menu.append(item)
+            menu.show_all(); menu.popup_at_pointer(event)
+            return True
         return False
 
     def _key_press(self, _window, event: Gdk.EventKey) -> bool:
         if event.keyval in (Gdk.KEY_w, Gdk.KEY_W) and event.state & Gdk.ModifierType.CONTROL_MASK:
-            page = self.notebook.get_nth_page(self.notebook.get_current_page())
-            if page is not None: self._close_tab(page)
+            self._close_active_tab()
+            return True
+        if event.keyval in (Gdk.KEY_d, Gdk.KEY_D) and event.state & Gdk.ModifierType.CONTROL_MASK:
+            self._close_active_tab()
             return True
         return False
+
+    def _close_active_tab(self) -> None:
+        page = self.notebook.get_nth_page(self.notebook.get_current_page())
+        if page is not None:
+            self._close_tab(page)
+
+    def _rename_active_tab(self) -> None:
+        page = self.notebook.get_nth_page(self.notebook.get_current_page())
+        if page is not None:
+            self._rename_tab(page)
+
+    def _rename_tab(self, view: TerminalView) -> None:
+        current = view.tab_title.get_text()
+        dialog = Gtk.Dialog(title="Rename Tab", transient_for=self, flags=Gtk.DialogFlags.MODAL)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL); dialog.add_button("Rename", Gtk.ResponseType.OK)
+        entry = Gtk.Entry(text=current)
+        dialog.get_content_area().pack_start(entry, False, False, 10); dialog.show_all()
+        if dialog.run() == Gtk.ResponseType.OK and entry.get_text().strip():
+            title = entry.get_text().strip()
+            view.tab_title.set_text(title); view.tab_title.set_tooltip_text(title); view.tab_header.set_tooltip_text(title)
+        dialog.destroy()
+
+    def _duplicate_active_tab(self) -> None:
+        page = self.notebook.get_nth_page(self.notebook.get_current_page())
+        if page is not None:
+            self._duplicate_tab(page)
+
+    def _duplicate_tab(self, view: TerminalView) -> None:
+        saved = getattr(view, "saved_session", None)
+        if saved is not None:
+            self._open_ssh_session(saved)
+        else:
+            self._new_local_tab()
 
     def _open_ssh_session(self, session: Session) -> None:
         if not session.hostname:
@@ -122,6 +174,13 @@ class MainWindow(Gtk.ApplicationWindow):
         command = ["ssh", "-p", str(session.port or 22), "-o", "SetEnv=COLORTERM=truecolor", target]
         if session.startup_command:
             command.extend([session.startup_command])
+        else:
+            # Make the remote interactive shell report its directory through OSC 7.
+            # VTE exposes that URI to the SFTP sidebar's follow mode.
+            command.extend([
+                "export PROMPT_COMMAND='printf \"\\033]7;file://$HOSTNAME$PWD\\007\"'; "
+                "exec \"${SHELL:-/bin/sh}\" -i"
+            ])
         view = TerminalView(self.config, command=command, cwd=session.working_directory, kind="ssh", on_status=self._terminal_status)
         view.runtime_id = new_id()
         view.saved_session_id = session.id
