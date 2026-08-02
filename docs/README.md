@@ -2,6 +2,23 @@
 
 The repository now contains the first runnable milestone of the LinuXterm clone.
 
+## Installation
+
+There is no separate `requirements.txt`; Python dependencies are declared in
+`pyproject.toml` (`PyGObject` and `cryptography`). From the `linuxterm` directory, install
+the project in editable mode with:
+
+```text
+python3 -m pip install -e .
+```
+
+The project requires Python 3.12 or newer. On Debian/Ubuntu, install the GTK/VTE system
+packages as well:
+
+```text
+sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91
+```
+
 ## Run
 
 This milestone targets the locally available GTK 3 + VTE 2.91 stack. On a Debian/Ubuntu system,
